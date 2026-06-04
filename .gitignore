@@ -219,6 +219,11 @@ __marimo__/
 
 # Runtime data (uploads, processed videos, VOC search cache)
 data/
+# Default seed data — keep these in version control
+!data/sample_video/Kexin.mp4
+!data/sample_video/coach.mp4
+!data/searches/index.json
+!data/searches/ea62e3b622b6.json
 
 # Environment secrets
 .env

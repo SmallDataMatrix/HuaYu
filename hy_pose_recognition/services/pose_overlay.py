@@ -10,6 +10,22 @@ from hy_pose_recognition.services.landmarks import MEDIAPIPE_BONES, POSE_RENDER_
 
 ProgressCallback = Callable[[int, int], None]
 
+_MODEL_PATH = settings.project_root / "data" / "models" / "pose_landmarker_full.task"
+
+# BGR colours per player index (teal, orange, magenta, yellow-green)
+_LINE_COLORS = [
+    (30, 205, 190),
+    (0, 130, 255),
+    (255, 0, 200),
+    (0, 230, 230),
+]
+_ACCENT_COLORS = [
+    (255, 105, 40),
+    (40, 200, 255),
+    (200, 40, 255),
+    (40, 255, 180),
+]
+
 
 def render_pose_overlay_video(
     job_id: str,
@@ -17,8 +33,8 @@ def render_pose_overlay_video(
     duration_sec: float,
     progress_callback: ProgressCallback | None = None,
 ) -> tuple[Path, list[dict[str, Any]], int, int, int]:
-    """Detect real body landmarks and draw them onto an output video."""
-    cv2, mp_pose = _load_pose_dependencies()
+    """Detect body landmarks for all visible players and draw them onto an output video."""
+    cv2, mp_module, landmarker_cls = _load_pose_dependencies()
     capture = cv2.VideoCapture(str(video_path))
     if not capture.isOpened():
         raise ValueError("无法打开上传视频。")
@@ -33,14 +49,18 @@ def render_pose_overlay_video(
     output_path = settings.processed_dir / f"{job_id}.mp4"
     writer = _open_video_writer(cv2, output_path, fps, width, height)
     frames: list[dict[str, Any]] = []
-    previous_keypoints: list[dict[str, float]] | None = None
-    detected_count = 0
+    total_detected = 0
 
-    with mp_pose.Pose(
-        model_complexity=1,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5,
-    ) as pose:
+    options = landmarker_cls.PoseLandmarkerOptions(
+        base_options=landmarker_cls.BaseOptions(model_asset_path=str(_MODEL_PATH)),
+        running_mode=landmarker_cls.RunningMode.IMAGE,
+        num_poses=4,
+        min_pose_detection_confidence=0.3,
+        min_pose_presence_confidence=0.3,
+        min_tracking_confidence=0.3,
+    )
+
+    with landmarker_cls.PoseLandmarker.create_from_options(options) as landmarker:
         for frame_index in range(max_frames):
             ok, frame = capture.read()
             if not ok:
@@ -48,34 +68,23 @@ def render_pose_overlay_video(
             if frame.shape[1] != width or frame.shape[0] != height:
                 frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
 
-            keypoints = _detect_keypoints(cv2, pose, frame)
-            detected = keypoints is not None
-            if detected:
-                previous_keypoints = keypoints
-                detected_count += 1
-            elif previous_keypoints is not None:
-                keypoints = previous_keypoints
-            else:
-                writer.write(frame)
-                if progress_callback and frame_index % 15 == 0:
-                    progress_callback(frame_index, max_frames)
-                continue
+            timestamp_ms = round(frame_index / fps * 1000)
+            players = _detect_players(cv2, mp_module, landmarker, frame, timestamp_ms)
 
-            _draw_pose(cv2, frame, keypoints, detected)
+            if players:
+                total_detected += 1
+                _draw_all_poses(cv2, frame, players)
+
+            writer.write(frame)
             frames.append(
                 {
                     "job_id": job_id,
                     "frame_index": len(frames),
-                    "timestamp_ms": round(len(frames) / fps * 1000),
-                    "skeleton": {
-                        "keypoints": keypoints,
-                        "angles": _compute_angles(keypoints),
-                        "detected": detected,
-                    },
+                    "timestamp_ms": timestamp_ms,
+                    "players": players,
                     "shuttle": {"detected": False, "bounding_box": None, "center": None},
                 }
             )
-            writer.write(frame)
 
             if progress_callback and frame_index % 15 == 0:
                 progress_callback(frame_index, max_frames)
@@ -83,20 +92,37 @@ def render_pose_overlay_video(
     capture.release()
     writer.release()
 
-    if not frames or detected_count == 0:
+    if not frames or total_detected == 0:
         output_path.unlink(missing_ok=True)
         raise ValueError("未能在视频中检测到人体姿态，请上传人物完整、光线清晰的视频。")
 
     return output_path, frames, fps, width, height
 
 
-def _load_pose_dependencies() -> tuple[Any, Any]:
+def _load_pose_dependencies() -> tuple[Any, Any, Any]:
     try:
         import cv2
         import mediapipe as mp
-    except ImportError as exc:  # pragma: no cover - depends on runtime environment.
-        raise RuntimeError("需要安装 opencv-python 和 mediapipe 才能生成真实骨架叠加视频。") from exc
-    return cv2, mp.solutions.pose
+        from mediapipe.tasks import python as mp_tasks
+        from mediapipe.tasks.python import vision as mp_vision
+    except ImportError as exc:
+        raise RuntimeError("需要安装 opencv-python 和 mediapipe 才能生成骨架叠加视频。") from exc
+    if not _MODEL_PATH.exists():
+        raise RuntimeError(
+            f"未找到姿态检测模型文件：{_MODEL_PATH}\n"
+            "请运行：curl -L 'https://storage.googleapis.com/mediapipe-models/"
+            "pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task'"
+            f" -o {_MODEL_PATH}"
+        )
+
+    class _Landmarker:
+        """Thin namespace combining tasks classes for cleaner call sites."""
+        BaseOptions = mp_tasks.BaseOptions
+        RunningMode = mp_vision.RunningMode
+        PoseLandmarkerOptions = mp_vision.PoseLandmarkerOptions
+        PoseLandmarker = mp_vision.PoseLandmarker
+
+    return cv2, mp, _Landmarker
 
 
 def _scaled_size(source_width: int, source_height: int) -> tuple[int, int]:
@@ -107,76 +133,102 @@ def _scaled_size(source_width: int, source_height: int) -> tuple[int, int]:
 
 
 def _open_video_writer(cv2: Any, output_path: Path, fps: int, width: int, height: int) -> Any:
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
-    if not writer.isOpened():
-        raise ValueError("无法创建骨架叠加输出视频。")
-    return writer
+    # avc1 (H.264) is required for browser playback via data URI; mp4v is not web-compatible
+    for fourcc_tag in ("avc1", "mp4v"):
+        fourcc = cv2.VideoWriter_fourcc(*fourcc_tag)
+        writer = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
+        if writer.isOpened():
+            return writer
+    raise ValueError("无法创建骨架叠加输出视频。")
 
 
-def _detect_keypoints(cv2: Any, pose: Any, frame: Any) -> list[dict[str, float]] | None:
+def _detect_players(
+    cv2: Any, mp_module: Any, landmarker: Any, frame: Any, timestamp_ms: int
+) -> list[dict[str, Any]]:
+    """Return a list of player dicts, each with 'player_id', 'keypoints', and 'angles'."""
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    rgb.flags.writeable = False
-    result = pose.process(rgb)
-    if not result.pose_landmarks:
-        return None
-    keypoints = []
-    for index, landmark in enumerate(result.pose_landmarks.landmark):
-        keypoints.append(
+    mp_image = mp_module.Image(image_format=mp_module.ImageFormat.SRGB, data=rgb)
+    result = landmarker.detect(mp_image)
+
+    players = []
+    for landmarks in result.pose_landmarks:
+        keypoints = [
             {
-                "id": index,
-                "x": _clip(landmark.x),
-                "y": _clip(landmark.y),
-                "visibility": round(float(landmark.visibility), 4),
+                "id": idx,
+                "x": _clip(lm.x),
+                "y": _clip(lm.y),
+                "visibility": round(float(lm.visibility), 4),
+            }
+            for idx, lm in enumerate(landmarks)
+        ]
+        players.append(
+            {
+                "player_id": len(players),
+                "keypoints": keypoints,
+                "angles": _compute_angles(keypoints),
             }
         )
-    return keypoints
+    return players
 
 
-def _draw_pose(cv2: Any, frame: Any, keypoints: list[dict[str, float]], detected: bool) -> None:
-    height, width = frame.shape[:2]
-    by_id = {item["id"]: item for item in keypoints}
-    line_color = (30, 205, 190) if detected else (145, 160, 165)
-    joint_color = (245, 245, 245) if detected else (145, 160, 165)
-    accent_color = (40, 105, 255)
+def _draw_all_poses(cv2: Any, frame: Any, players: list[dict[str, Any]]) -> None:
+    h, w = frame.shape[:2]
+    for player in players:
+        pid = player["player_id"] % len(_LINE_COLORS)
+        _draw_single_pose(cv2, frame, player["keypoints"], _LINE_COLORS[pid], _ACCENT_COLORS[pid], w, h)
+
+
+def _draw_single_pose(
+    cv2: Any,
+    frame: Any,
+    keypoints: list[dict[str, float]],
+    line_color: tuple[int, int, int],
+    accent_color: tuple[int, int, int],
+    width: int,
+    height: int,
+) -> None:
+    by_id = {kp["id"]: kp for kp in keypoints}
+    joint_color = (245, 245, 245)
 
     for start, end in MEDIAPIPE_BONES:
         if start not in by_id or end not in by_id:
             continue
-        start_xy = _pixel_xy(by_id[start], width, height)
-        end_xy = _pixel_xy(by_id[end], width, height)
-        cv2.line(frame, start_xy, end_xy, line_color, 5, cv2.LINE_AA)
+        cv2.line(frame, _px(by_id[start], width, height), _px(by_id[end], width, height),
+                 line_color, 5, cv2.LINE_AA)
 
-    for index in POSE_RENDER_IDS:
-        if index not in by_id:
+    for idx in POSE_RENDER_IDS:
+        if idx not in by_id:
             continue
-        center = _pixel_xy(by_id[index], width, height)
-        color = accent_color if index in {14, 16, 26, 28} else joint_color
+        center = _px(by_id[idx], width, height)
+        color = accent_color if idx in {14, 16, 26, 28} else joint_color
         cv2.circle(frame, center, 7, (20, 30, 40), -1, cv2.LINE_AA)
         cv2.circle(frame, center, 5, color, -1, cv2.LINE_AA)
 
 
-def _pixel_xy(point: dict[str, float], width: int, height: int) -> tuple[int, int]:
+def _px(point: dict[str, float], width: int, height: int) -> tuple[int, int]:
     return round(point["x"] * width), round(point["y"] * height)
 
 
 def _compute_angles(keypoints: list[dict[str, float]]) -> dict[str, float]:
-    by_id = {item["id"]: item for item in keypoints}
-    shoulder_line = _segment_angle(by_id[11], by_id[12])
-    hip_line = _segment_angle(by_id[23], by_id[24])
-    trunk_rotation = abs(shoulder_line - hip_line)
-    if trunk_rotation > 180:
-        trunk_rotation = 360 - trunk_rotation
-
-    return {
-        "right_elbow": _angle_between(by_id[12], by_id[14], by_id[16]),
-        "left_elbow": _angle_between(by_id[11], by_id[13], by_id[15]),
-        "right_knee": _angle_between(by_id[24], by_id[26], by_id[28]),
-        "left_knee": _angle_between(by_id[23], by_id[25], by_id[27]),
-        "right_shoulder": _angle_between(by_id[24], by_id[12], by_id[14]),
-        "right_hip": _angle_between(by_id[12], by_id[24], by_id[26]),
-        "trunk_rotation": round(trunk_rotation, 1),
-    }
+    by_id = {kp["id"]: kp for kp in keypoints}
+    try:
+        shoulder_line = _segment_angle(by_id[11], by_id[12])
+        hip_line = _segment_angle(by_id[23], by_id[24])
+        trunk_rotation = abs(shoulder_line - hip_line)
+        if trunk_rotation > 180:
+            trunk_rotation = 360 - trunk_rotation
+        return {
+            "right_elbow": _angle_between(by_id[12], by_id[14], by_id[16]),
+            "left_elbow": _angle_between(by_id[11], by_id[13], by_id[15]),
+            "right_knee": _angle_between(by_id[24], by_id[26], by_id[28]),
+            "left_knee": _angle_between(by_id[23], by_id[25], by_id[27]),
+            "right_shoulder": _angle_between(by_id[24], by_id[12], by_id[14]),
+            "right_hip": _angle_between(by_id[12], by_id[24], by_id[26]),
+            "trunk_rotation": round(trunk_rotation, 1),
+        }
+    except (KeyError, ZeroDivisionError):
+        return {k: 0.0 for k in ("right_elbow", "left_elbow", "right_knee", "left_knee",
+                                  "right_shoulder", "right_hip", "trunk_rotation")}
 
 
 def _angle_between(a: dict[str, float], b: dict[str, float], c: dict[str, float]) -> float:
