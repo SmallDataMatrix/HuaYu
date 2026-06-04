@@ -4,14 +4,21 @@ Disk persistence for racket search results.
 Layout under DATA_DIR/searches/:
   {slug}.json  — full payload: meta + records + videos + voc
   index.json   — lightweight index (meta only) for fast sidebar listing
+
+All write operations are best-effort: failures are logged and swallowed so
+session-state caching still works when the filesystem is read-only (e.g.
+Streamlit Cloud container restart).
 """
 import hashlib
 import json
+import logging
 import os
 import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
 
 from config import DATA_DIR
 
@@ -27,8 +34,14 @@ def _slug(name: str) -> str:
     return hashlib.md5(_norm_key(name).encode()).hexdigest()[:12]
 
 
-def _ensure_dir() -> None:
-    _SEARCHES_DIR.mkdir(parents=True, exist_ok=True)
+def _ensure_dir() -> bool:
+    """Create the searches directory; return False if it can't be created."""
+    try:
+        _SEARCHES_DIR.mkdir(parents=True, exist_ok=True)
+        return True
+    except OSError as e:
+        _log.warning("Cannot create searches dir %s: %s", _SEARCHES_DIR, e)
+        return False
 
 
 def _index_path() -> Path:
@@ -71,8 +84,7 @@ def save_search(
     *,
     logged_in: bool = False,
 ) -> dict:
-    """Persist search result; return the meta dict."""
-    _ensure_dir()
+    """Persist search result; return the meta dict. Writes are best-effort."""
     slug = _slug(racket_name)
     meta = {
         "name": racket_name,
@@ -83,12 +95,20 @@ def save_search(
         "summary": voc.get("summary", ""),
         "mode": "logged_in" if logged_in else "anonymous",
     }
+    if not _ensure_dir():
+        return meta
     payload = {"meta": meta, "records": records, "videos": videos, "voc": voc}
-    _write_atomic(_search_path(slug), payload)
-
-    index = _read_index()
-    index[slug] = meta
-    _write_atomic(_index_path(), index)
+    try:
+        _write_atomic(_search_path(slug), payload)
+    except Exception as e:
+        _log.warning("Could not write search %s: %s", slug, e)
+        return meta
+    try:
+        index = _read_index()
+        index[slug] = meta
+        _write_atomic(_index_path(), index)
+    except Exception as e:
+        _log.warning("Could not update index: %s", e)
     return meta
 
 

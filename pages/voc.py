@@ -235,7 +235,10 @@ def get_result(name: str, *, force: bool) -> tuple:
 
     warn_slot.empty()  # remove the warning once analysis is done
     st.session_state[key] = (records, videos, voc)
-    save_search(name, records, videos, voc)
+    try:
+        save_search(name, records, videos, voc)
+    except Exception as e:
+        logging.getLogger(__name__).warning("save_search failed (ephemeral storage): %s", e)
     return records, videos, voc, "fresh"
 
 
