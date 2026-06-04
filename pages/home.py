@@ -494,7 +494,7 @@ st.markdown(
       <a href="mailto:smalldatamatrix@gmail.com">smalldatamatrix@gmail.com</a>
       <div class="contact-dot"></div>
       <a href="https://fsquaredquant.nl/about-us//" target="_blank" rel="noreferrer">
-        FFquant
+        FFquant & Small Data Matrix
       </a>
     </div>
     """,
