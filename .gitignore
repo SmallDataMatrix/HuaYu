@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Runtime data (uploads, processed videos, VOC search cache)
+data/
+
+# Environment secrets
+.env
