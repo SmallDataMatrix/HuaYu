@@ -221,7 +221,7 @@ __marimo__/
 # Use data/* (not data/) so negation rules below can un-ignore specific files.
 # Subdirectory exceptions must appear before their contents are whitelisted.
 data/*
-!data/Kexin_Wang_CV_CN.pdf
+!data/Kexin_Wang_CV_photo.png
 !data/sample_video/
 data/sample_video/*
 !data/sample_video/Kexin.mp4
