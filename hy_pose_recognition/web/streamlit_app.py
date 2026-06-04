@@ -133,6 +133,11 @@ def _analysis_dialog(primary, comparison) -> None:
             st.rerun()
         return
 
+    st.info(
+        "⏳ 本演示使用免费算力，分析可能需要 **3–5 分钟**，"
+        "请耐心等待，期间请勿关闭或刷新页面。"
+    )
+
     st.session_state.comparison_path = None
     st.session_state.jobs = []
     progress = st.progress(0, text="正在准备分析…")

@@ -45,7 +45,6 @@ def build_motion_player_html(job: AnalysisJob, title: str) -> str:
           <h3>{html.escape(title)}</h3>
           <p>{html.escape(job.filename)}</p>
         </div>
-        <div class="status-pill">{"骨架已写入视频" if has_annotated_video else "实时骨架叠加"}</div>
       </div>
       <div class="stage">
         <video data-video preload="metadata" playsinline>
@@ -108,15 +107,23 @@ def build_motion_player_html(job: AnalysisJob, title: str) -> str:
           return frames[Math.max(0, Math.min(frames.length - 1, index))];
         }}
 
-        function drawPose(frame, width, height) {{
-          const keypoints = new Map(frame.keypoints.map((item) => [item.id, item]));
+        const PLAYER_LINE_COLORS = [
+          "rgba(20,184,166,0.95)",
+          "rgba(249,115,22,0.95)",
+          "rgba(168,85,247,0.95)",
+          "rgba(234,179,8,0.95)",
+        ];
+        const PLAYER_ACCENT_COLORS = ["#f97316","#fb923c","#c084fc","#fde047"];
+
+        function drawSkeleton(playerKps, lineColor, accentColor, width, height) {{
+          const kpMap = new Map(playerKps.map((p) => [p.id, p]));
           ctx.lineCap = "round";
           ctx.lineJoin = "round";
-          ctx.strokeStyle = "rgba(20, 184, 166, 0.95)";
+          ctx.strokeStyle = lineColor;
           ctx.lineWidth = 5;
           for (const [start, end] of payload.bones) {{
-            const a = keypoints.get(start);
-            const b = keypoints.get(end);
+            const a = kpMap.get(start);
+            const b = kpMap.get(end);
             if (!a || !b) continue;
             ctx.beginPath();
             ctx.moveTo(a.x * width, a.y * height);
@@ -124,16 +131,29 @@ def build_motion_player_html(job: AnalysisJob, title: str) -> str:
             ctx.stroke();
           }}
           for (const id of payload.poseIds) {{
-            const point = keypoints.get(id);
+            const point = kpMap.get(id);
             if (!point) continue;
             const active = id === 14 || id === 16;
             ctx.beginPath();
-            ctx.fillStyle = active ? "#f97316" : "#f8fafc";
+            ctx.fillStyle = active ? accentColor : "#f8fafc";
             ctx.arc(point.x * width, point.y * height, active ? 6 : 5, 0, Math.PI * 2);
             ctx.fill();
             ctx.lineWidth = 2;
-            ctx.strokeStyle = "rgba(15, 23, 42, 0.65)";
+            ctx.strokeStyle = "rgba(15,23,42,0.65)";
             ctx.stroke();
+          }}
+        }}
+
+        function drawPose(frame, width, height) {{
+          const players = frame.players || [];
+          if (players.length > 0) {{
+            players.forEach((p, i) => {{
+              const lineColor = PLAYER_LINE_COLORS[i % PLAYER_LINE_COLORS.length];
+              const accentColor = PLAYER_ACCENT_COLORS[i % PLAYER_ACCENT_COLORS.length];
+              drawSkeleton(p.keypoints, lineColor, accentColor, width, height);
+            }});
+          }} else if (frame.keypoints && frame.keypoints.length) {{
+            drawSkeleton(frame.keypoints, PLAYER_LINE_COLORS[0], PLAYER_ACCENT_COLORS[0], width, height);
           }}
         }}
 
@@ -354,11 +374,18 @@ def build_motion_player_html(job: AnalysisJob, title: str) -> str:
 
 
 def _frame_payload(frame: dict[str, Any]) -> dict[str, Any]:
+    players = frame.get("players", [])
+    primary = players[0] if players else {}
     return {
         "frameIndex": frame["frame_index"],
         "timestampMs": frame["timestamp_ms"],
-        "keypoints": frame["skeleton"]["keypoints"],
-        "angles": frame["skeleton"]["angles"],
+        "players": [
+            {"playerId": p["player_id"], "keypoints": p["keypoints"], "angles": p["angles"]}
+            for p in players
+        ],
+        # keep primary fields for metric display
+        "keypoints": primary.get("keypoints", []),
+        "angles": primary.get("angles", {}),
         "shuttle": frame["shuttle"],
     }
 

@@ -21,17 +21,21 @@ ZONE_LABELS = {
 }
 
 
-def angle_dataframe(job: AnalysisJob) -> pd.DataFrame:
+def angle_dataframe(job: AnalysisJob, player_id: int = 0) -> pd.DataFrame:
     rows = []
     for frame in job.frames:
-        angles = frame["skeleton"]["angles"]
+        players = frame.get("players", [])
+        player = next((p for p in players if p["player_id"] == player_id), None)
+        if player is None:
+            continue
+        angles = player["angles"]
         rows.append(
             {
                 "time_sec": frame["timestamp_ms"] / 1000,
-                "right_elbow": angles["right_elbow"],
-                "right_knee": angles["right_knee"],
-                "trunk_rotation": angles["trunk_rotation"],
-                "right_shoulder": angles["right_shoulder"],
+                "right_elbow": angles.get("right_elbow", 0.0),
+                "right_knee": angles.get("right_knee", 0.0),
+                "trunk_rotation": angles.get("trunk_rotation", 0.0),
+                "right_shoulder": angles.get("right_shoulder", 0.0),
             }
         )
     return pd.DataFrame(rows)
@@ -84,27 +88,37 @@ def draw_video_grid(draw: ImageDraw.ImageDraw, size: tuple[int, int]) -> None:
     draw.line((0, height * 0.86, width, height * 0.86), fill="#2c4847", width=2)
 
 
+_PLAYER_COLORS_PIL = ["#22d3c5", "#f97316", "#a855f7", "#eab308"]
+_PLAYER_ACCENTS_PIL = ["#ff6a3d", "#fb923c", "#c084fc", "#fde047"]
+
+
 def draw_pose(draw: ImageDraw.ImageDraw, frame: dict[str, Any], size: tuple[int, int]) -> None:
     width, height = size
-    kp = {item["id"]: item for item in frame["skeleton"]["keypoints"]}
-    for start, end in MEDIAPIPE_BONES:
-        draw.line(
-            (
-                kp[start]["x"] * width,
-                kp[start]["y"] * height,
-                kp[end]["x"] * width,
-                kp[end]["y"] * height,
-            ),
-            fill="#22d3c5",
-            width=7,
-        )
-    for index in POSE_RENDER_IDS:
-        item = kp[index]
-        radius = 8 if index in {14, 16} else 6
-        fill = "#ff6a3d" if index in {14, 16} else "#f9fafb"
-        x = item["x"] * width
-        y = item["y"] * height
-        draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=fill)
+    players = frame.get("players", [])
+    for player in players:
+        pid = player["player_id"] % len(_PLAYER_COLORS_PIL)
+        line_fill = _PLAYER_COLORS_PIL[pid]
+        accent_fill = _PLAYER_ACCENTS_PIL[pid]
+        kp = {item["id"]: item for item in player["keypoints"]}
+        for start, end in MEDIAPIPE_BONES:
+            if start not in kp or end not in kp:
+                continue
+            draw.line(
+                (
+                    kp[start]["x"] * width, kp[start]["y"] * height,
+                    kp[end]["x"] * width, kp[end]["y"] * height,
+                ),
+                fill=line_fill,
+                width=7,
+            )
+        for index in POSE_RENDER_IDS:
+            if index not in kp:
+                continue
+            item = kp[index]
+            radius = 8 if index in {14, 16} else 6
+            fill = accent_fill if index in {14, 16} else "#f9fafb"
+            x, y = item["x"] * width, item["y"] * height
+            draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=fill)
 
 
 def draw_shuttle_trace(draw: ImageDraw.ImageDraw, job: AnalysisJob, frame_index: int, size: tuple[int, int]) -> None:

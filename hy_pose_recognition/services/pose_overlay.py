@@ -12,6 +12,15 @@ ProgressCallback = Callable[[int, int], None]
 
 _MODEL_PATH = settings.project_root / "data" / "models" / "pose_landmarker_full.task"
 
+# Detection tuning for wide, multi-person gym footage where the training subject
+# sits at mid-distance. A direct full-frame pass tends to collapse or miss them,
+# so we locate the subject coarsely, then re-detect on an upscaled crop.
+_DETECT_CONFIDENCE = 0.25      # detection / presence threshold (lenient for distant subjects)
+_COARSE_NUM_POSES = 5          # candidates considered when locating the subject
+_MIN_SUBJECT_HEIGHT = 0.12     # min normalised bbox height; rejects degenerate/cropped poses
+_ROI_PAD = 0.45                # padding around the subject bbox before cropping
+_CROP_UPSCALE_TARGET = 720     # px; upscale the subject crop for sharper landmarks
+
 # BGR colours per player index (teal, orange, magenta, yellow-green)
 _LINE_COLORS = [
     (30, 205, 190),
@@ -51,16 +60,22 @@ def render_pose_overlay_video(
     frames: list[dict[str, Any]] = []
     total_detected = 0
 
-    options = landmarker_cls.PoseLandmarkerOptions(
-        base_options=landmarker_cls.BaseOptions(model_asset_path=str(_MODEL_PATH)),
-        running_mode=landmarker_cls.RunningMode.IMAGE,
-        num_poses=4,
-        min_pose_detection_confidence=0.3,
-        min_pose_presence_confidence=0.3,
-        min_tracking_confidence=0.3,
-    )
+    def _make_options(num_poses: int) -> Any:
+        return landmarker_cls.PoseLandmarkerOptions(
+            base_options=landmarker_cls.BaseOptions(model_asset_path=str(_MODEL_PATH)),
+            running_mode=landmarker_cls.RunningMode.IMAGE,
+            num_poses=num_poses,
+            min_pose_detection_confidence=_DETECT_CONFIDENCE,
+            min_pose_presence_confidence=_DETECT_CONFIDENCE,
+            min_tracking_confidence=_DETECT_CONFIDENCE,
+        )
 
-    with landmarker_cls.PoseLandmarker.create_from_options(options) as landmarker:
+    # Carry the subject's location across frames so a dropped detection falls back
+    # to the previous region instead of losing the skeleton entirely.
+    subject_state: dict[str, Any] = {"center": None, "roi": None}
+
+    with landmarker_cls.PoseLandmarker.create_from_options(_make_options(_COARSE_NUM_POSES)) as coarse_lm, \
+         landmarker_cls.PoseLandmarker.create_from_options(_make_options(1)) as fine_lm:
         for frame_index in range(max_frames):
             ok, frame = capture.read()
             if not ok:
@@ -69,7 +84,7 @@ def render_pose_overlay_video(
                 frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
 
             timestamp_ms = round(frame_index / fps * 1000)
-            players = _detect_players(cv2, mp_module, landmarker, frame, timestamp_ms)
+            players = _detect_subject(cv2, mp_module, coarse_lm, fine_lm, frame, subject_state)
 
             if players:
                 total_detected += 1
@@ -142,33 +157,125 @@ def _open_video_writer(cv2: Any, output_path: Path, fps: int, width: int, height
     raise ValueError("无法创建骨架叠加输出视频。")
 
 
-def _detect_players(
-    cv2: Any, mp_module: Any, landmarker: Any, frame: Any, timestamp_ms: int
+def _detect_subject(
+    cv2: Any, mp_module: Any, coarse_lm: Any, fine_lm: Any, frame: Any, state: dict[str, Any]
 ) -> list[dict[str, Any]]:
-    """Return a list of player dicts, each with 'player_id', 'keypoints', and 'angles'."""
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    mp_image = mp_module.Image(image_format=mp_module.ImageFormat.SRGB, data=rgb)
-    result = landmarker.detect(mp_image)
+    """Locate the main training subject and return it as a single-player list.
 
-    players = []
-    for landmarks in result.pose_landmarks:
-        keypoints = [
-            {
-                "id": idx,
-                "x": _clip(lm.x),
-                "y": _clip(lm.y),
-                "visibility": round(float(lm.visibility), 4),
-            }
-            for idx, lm in enumerate(landmarks)
-        ]
-        players.append(
-            {
-                "player_id": len(players),
-                "keypoints": keypoints,
-                "angles": _compute_angles(keypoints),
-            }
+    Stage 1 runs a full-frame pass to find the dominant person; stage 2 crops a
+    padded box around them, upscales it, and re-detects for an accurate full-body
+    skeleton. The subject location is cached in ``state`` so frames where the
+    coarse pass fails still recover by cropping the previous region.
+    """
+    height, width = frame.shape[:2]
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    coarse = coarse_lm.detect(mp_module.Image(image_format=mp_module.ImageFormat.SRGB, data=rgb))
+    candidates = [_landmarks_to_keypoints(lm) for lm in coarse.pose_landmarks]
+
+    subject = _pick_subject(candidates, state["center"])
+    if subject is not None:
+        state["center"] = _kp_center(subject)
+        state["roi"] = _roi_pixels(_kp_bbox(subject), width, height)
+
+    if state["roi"] is None:
+        return []
+
+    refined = _detect_on_crop(cv2, mp_module, fine_lm, frame, state["roi"], width, height)
+    if refined is not None and _kp_height(refined) >= _MIN_SUBJECT_HEIGHT:
+        state["center"] = _kp_center(refined)
+        state["roi"] = _roi_pixels(_kp_bbox(refined), width, height)
+        return [_make_player(refined)]
+
+    if subject is not None:
+        return [_make_player(subject)]
+    return []
+
+
+def _detect_on_crop(
+    cv2: Any, mp_module: Any, fine_lm: Any, frame: Any, roi: tuple[int, int, int, int],
+    width: int, height: int,
+) -> list[dict[str, float]] | None:
+    """Detect a single pose on an upscaled subject crop, mapped back to full-frame coords."""
+    rx0, ry0, rx1, ry1 = roi
+    crop_w, crop_h = rx1 - rx0, ry1 - ry0
+    if crop_w < 16 or crop_h < 16:
+        return None
+
+    crop = frame[ry0:ry1, rx0:rx1]
+    scale = _CROP_UPSCALE_TARGET / max(crop_w, crop_h)
+    if scale > 1.0:
+        crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+
+    rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+    result = fine_lm.detect(mp_module.Image(image_format=mp_module.ImageFormat.SRGB, data=rgb))
+    if not result.pose_landmarks:
+        return None
+
+    return [
+        {
+            "id": idx,
+            "x": _clip((rx0 + _clip(lm.x) * crop_w) / width),
+            "y": _clip((ry0 + _clip(lm.y) * crop_h) / height),
+            "visibility": round(float(lm.visibility), 4),
+        }
+        for idx, lm in enumerate(result.pose_landmarks[0])
+    ]
+
+
+def _pick_subject(
+    candidates: list[list[dict[str, float]]], prev_center: tuple[float, float] | None
+) -> list[dict[str, float]] | None:
+    """Choose the main subject: track the previous one, else the largest standing person."""
+    valid = [kp for kp in candidates if _kp_height(kp) >= _MIN_SUBJECT_HEIGHT]
+    if not valid:
+        return None
+    if prev_center is not None:
+        # Stay locked on the same person: nearest centre wins, taller breaks ties.
+        return min(
+            valid,
+            key=lambda kp: math.hypot(*(a - b for a, b in zip(_kp_center(kp), prev_center)))
+            - 0.25 * _kp_height(kp),
         )
-    return players
+    return max(valid, key=_kp_height)
+
+
+def _landmarks_to_keypoints(landmarks: Any) -> list[dict[str, float]]:
+    return [
+        {"id": idx, "x": _clip(lm.x), "y": _clip(lm.y), "visibility": round(float(lm.visibility), 4)}
+        for idx, lm in enumerate(landmarks)
+    ]
+
+
+def _make_player(keypoints: list[dict[str, float]]) -> dict[str, Any]:
+    return {"player_id": 0, "keypoints": keypoints, "angles": _compute_angles(keypoints)}
+
+
+def _kp_bbox(keypoints: list[dict[str, float]]) -> tuple[float, float, float, float]:
+    xs = [kp["x"] for kp in keypoints]
+    ys = [kp["y"] for kp in keypoints]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _kp_center(keypoints: list[dict[str, float]]) -> tuple[float, float]:
+    x0, y0, x1, y1 = _kp_bbox(keypoints)
+    return (x0 + x1) / 2, (y0 + y1) / 2
+
+
+def _kp_height(keypoints: list[dict[str, float]]) -> float:
+    _, y0, _, y1 = _kp_bbox(keypoints)
+    return y1 - y0
+
+
+def _roi_pixels(
+    bbox: tuple[float, float, float, float], width: int, height: int
+) -> tuple[int, int, int, int]:
+    x0, y0, x1, y1 = bbox
+    bw, bh = x1 - x0, y1 - y0
+    rx0 = max(0.0, x0 - _ROI_PAD * bw)
+    rx1 = min(1.0, x1 + _ROI_PAD * bw)
+    ry0 = max(0.0, y0 - _ROI_PAD * bh)
+    ry1 = min(1.0, y1 + _ROI_PAD * bh)
+    return int(rx0 * width), int(ry0 * height), int(rx1 * width), int(ry1 * height)
 
 
 def _draw_all_poses(cv2: Any, frame: Any, players: list[dict[str, Any]]) -> None:

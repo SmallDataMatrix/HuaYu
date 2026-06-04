@@ -1,12 +1,9 @@
 #！ python
-# to run the app streamlit run app.py
 import datetime
 import logging
-import time
 import streamlit as st
 
 from crawlers.bilibili import collect_corpus
-from crawlers.bili_login import start_login, poll_login, verify_sessdata
 from llm.voc import analyze
 from storage import save_search, load_search, list_searches, delete_search, _slug
 
@@ -16,19 +13,25 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
-st.set_page_config(page_title="羽毛球拍用户意见挖掘", page_icon="🏸", layout="wide")
+st.set_page_config(
+    page_title="VOC 用户评价监测",
+    page_icon="🏸",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-# ── 免责声明横幅 ──────────────────────────────────────────────────────────────
+# keep sidebar permanently visible
 st.markdown(
-    '<div style="background:#fffbeb;border:1px solid #f59e0b;border-radius:8px;'
-    'padding:8px 14px;margin-bottom:12px;font-size:12px;color:#92400e">'
-    '⚠️ <b>仅供演示</b>：本工具为求职作品集演示项目，不以任何商业目的设计或运营，'
-    '使用者须自行遵守相关法律法规，开发者不承担因不当使用所引发的任何法律责任。'
-    '</div>',
+    """
+    <style>
+    [data-testid="stSidebarCollapseButton"] { display: none !important; }
+    section[data-testid="stSidebar"] { min-width: 320px !important; }
+    </style>
+    """,
     unsafe_allow_html=True,
 )
 
-st.title("🏸 羽毛球拍用户意见挖掘")
+st.title("🏸 VOC 用户评价监测")
 st.caption("基于 B 站弹幕与评论 · 大语言模型分析 · 挖掘用户真实诉求 · 每条结论可溯源原文")
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -46,74 +49,11 @@ with st.sidebar:
         st.success("会话缓存已清除（历史记录保留）")
 
     st.divider()
-
-    # ── B站账号登录 ──────────────────────────────────────────────────────────
-    st.markdown("**B站账号**")
-
-    _sessdata = st.session_state.get("bili_sessdata")
-
-    if _sessdata:
-        # ── 已登录 ──────────────────────────────────────────────────────────
-        uname = st.session_state.get("bili_uname", "B站用户")
-        st.success(f"✅ 已登录：**{uname}**")
-        st.caption("分析时将使用您的账号请求 B 站数据，获得更完整的评论。")
-        if st.button("退出登录", use_container_width=True):
-            for k in ("bili_sessdata", "bili_uname", "bili_qr"):
-                st.session_state.pop(k, None)
-            st.rerun()
-
-    elif st.session_state.get("bili_qr"):
-        # ── 正在扫码 ─────────────────────────────────────────────────────────
-        qr = st.session_state.bili_qr
-        result = poll_login(qr["key"], qr["cookies"])
-
-        if result["status"] == "success" and result.get("sessdata"):
-            with st.spinner("验证账号…"):
-                uname = verify_sessdata(result["sessdata"])
-            st.session_state.bili_sessdata = result["sessdata"]
-            st.session_state.bili_uname = uname or "B站用户"
-            st.session_state.pop("bili_qr", None)
-            st.rerun()
-
-        elif result["status"] == "expired":
-            st.session_state.pop("bili_qr", None)
-            st.error("二维码已过期，请重新生成")
-            st.rerun()
-
-        else:
-            st.image(qr["img_bytes"], caption="用 B站 APP 扫描登录", use_container_width=True)
-            if result["status"] == "scanned":
-                st.info("✅ 已扫码，请在手机上点击「确认登录」")
-            else:
-                st.caption("打开 B站 APP → 右上角扫一扫")
-
-            c1, c2 = st.columns(2)
-            if c1.button("刷新状态", use_container_width=True):
-                st.rerun()
-            if c2.button("取消", use_container_width=True):
-                st.session_state.pop("bili_qr", None)
-                st.rerun()
-
-            # Auto-poll: re-check every 2 s while QR is displayed
-            time.sleep(2)
-            st.rerun()
-
-    else:
-        # ── 未登录 ──────────────────────────────────────────────────────────
-        st.info(
-            "**匿名模式**（可正常使用）\n\n"
-            "搜索最多 20 个候选视频，筛选后分析最相关的 **3 个**，"
-            "每视频限 50 条评论，请求间隔较长。\n\n"
-            "登录后：分析最相关 **5 个**视频，每视频 200 条评论。"
-        )
-        if st.button("🔑 扫码登录 B站（推荐）", use_container_width=True, type="primary"):
-            with st.spinner("生成二维码…"):
-                qr_data = start_login()
-            if qr_data:
-                st.session_state.bili_qr = qr_data
-                st.rerun()
-            else:
-                st.error("二维码生成失败，请检查网络后重试")
+    st.info(
+        "**数据限制说明**\n\n"
+        "搜索最多 20 个候选视频，筛选后分析最相关的 **3 个**，"
+        "每视频限 **50 条**评论，请求间隔较长。"
+    )
 
     st.divider()
     st.markdown(
@@ -161,12 +101,12 @@ def _fmt_date(ts: int) -> str:
 
 
 def _evidence_html(evidence: list[dict], max_show: int = 3) -> str:
-    """Render evidence items as clickable links. Danmaku → ?t= timestamp; comment → video."""
+    """Render evidence items as clickable pill links."""
     parts = []
     for ev in evidence[:max_show]:
         url = ev["url"]
         text = ev["text"]
-        text_short = text[:22] + "…" if len(text) > 22 else text
+        text_short = text[:20] + "…" if len(text) > 20 else text
         t = ev.get("t")
         ts_str = _fmt_time(t)
         if ts_str is not None:
@@ -177,9 +117,10 @@ def _evidence_html(evidence: list[dict], max_show: int = 3) -> str:
             title = ev.get("video_title", "")[:20]
         parts.append(
             f'<a href="{url}" target="_blank" rel="noreferrer noopener" title="{title}" '
-            f'style="display:inline-block;margin:2px 4px 2px 0;padding:2px 8px;'
+            f'style="display:inline-block;margin:2px 3px 2px 0;padding:2px 7px;'
             f'background:#f0f7ff;border:1px solid #b8d9f8;border-radius:12px;'
-            f'font-size:11px;color:#1a73e8;text-decoration:none;white-space:nowrap">'
+            f'font-size:11px;color:#1a73e8;text-decoration:none;'
+            f'word-break:break-word;overflow-wrap:anywhere;max-width:100%">'
             f'{label}</a>'
         )
     return "".join(parts)
@@ -193,12 +134,13 @@ def _card(icon: str, title: str, subtitle: str, evidence: list[dict], badge: str
     )
     ev_html = _evidence_html(evidence) if evidence else ""
     ev_section = (
-        f'<div style="margin-top:8px;line-height:1.8">{ev_html}</div>'
+        f'<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:2px">{ev_html}</div>'
         if ev_html else ""
     )
     st.markdown(
         f'<div style="border:1px solid #e0e0e0;border-radius:10px;padding:14px 16px;'
-        f'margin-bottom:10px;background:#fafafa">'
+        f'margin-bottom:10px;background:#fafafa;overflow:hidden;'
+        f'word-break:break-word;overflow-wrap:anywhere">'
         f'<div style="font-size:15px;font-weight:600">{icon} {title}{badge_html}</div>'
         f'<div style="font-size:12px;color:#666;margin-top:3px">{subtitle}</div>'
         f'{ev_section}'
@@ -244,14 +186,21 @@ def get_result(name: str, *, force: bool) -> tuple:
 
     records = videos = voc = None
 
+    # Prominent warning shown while the analysis runs
+    warn_slot = st.empty()
+    warn_slot.markdown(
+        '<div style="background:#fff1f0;border:2px solid #ff4d4f;border-radius:8px;'
+        'padding:10px 16px;margin-bottom:12px;font-size:14px;color:#a8071a">'
+        '🚨 <b>分析进行中，请勿离开此页面！</b><br>'
+        '切换页面、刷新浏览器或点击其他按钮将导致分析结果完全丢失，请耐心等待分析完成。'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
     with st.status(f"📡 正在抓取《{name}》B 站数据…", expanded=True) as status:
         # ── Step 1: crawl ─────────────────────────────────────────────
         try:
-            records, videos = collect_corpus(
-                name,
-                sessdata=st.session_state.get("bili_sessdata"),
-                log_fn=st.write,
-            )
+            records, videos = collect_corpus(name, log_fn=st.write)
         except Exception as e:
             status.update(label="爬取失败", state="error")
             st.error(f"爬取失败：{e}")
@@ -259,7 +208,7 @@ def get_result(name: str, *, force: bool) -> tuple:
 
         if not records:
             status.update(label="未找到有效数据", state="error")
-            st.warning("未抓取到相关弹幕/评论，请检查球拍名称或网络。如持续失败可通过登录B站进行配置 BILI_SESSDATA。")
+            st.warning("未抓取到相关弹幕/评论，请检查球拍名称或网络。")
             st.stop()
 
         total_d = sum(v["danmaku_count"] for v in videos)
@@ -284,9 +233,9 @@ def get_result(name: str, *, force: bool) -> tuple:
 
         status.update(label="✅ 分析完成", state="complete", expanded=False)
 
+    warn_slot.empty()  # remove the warning once analysis is done
     st.session_state[key] = (records, videos, voc)
-    save_search(name, records, videos, voc,
-                logged_in=bool(st.session_state.get("bili_sessdata")))
+    save_search(name, records, videos, voc)
     return records, videos, voc, "fresh"
 
 
@@ -414,3 +363,13 @@ else:
         "</div></div>",
         unsafe_allow_html=True,
     )
+
+# ── 免责声明 ──────────────────────────────────────────────────────────────────
+st.markdown(
+    '<div style="background:#fffbeb;border:1px solid #f59e0b;border-radius:8px;'
+    'padding:8px 14px;margin-top:40px;font-size:12px;color:#92400e">'
+    '⚠️ <b>仅供演示</b>：本工具为求职作品集演示项目，不以任何商业目的设计或运营，'
+    '使用者须自行遵守相关法律法规。'
+    '</div>',
+    unsafe_allow_html=True,
+)

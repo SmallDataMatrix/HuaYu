@@ -6,9 +6,9 @@ A multi-page Streamlit app combining two badminton data tools, deployed at [smal
 
 | Page | Description |
 |------|-------------|
-| **Home** | Resume / portfolio landing page |
-| **Pose Recognition** | Upload a badminton video → pose overlay, stroke detection, landing map, joint-angle charts |
-| **VOC Mining** | Enter a racket name → crawl Bilibili danmaku & comments → LLM opinion analysis |
+| **致华语** | Resume / portfolio landing page |
+| **辅助教学分析** | Upload a badminton video → pose overlay, stroke detection, landing map, joint-angle charts |
+| **VOC 用户评价监测** | Enter a racket name → crawl Bilibili danmaku & comments → LLM opinion analysis |
 
 ## Local development
 
@@ -16,18 +16,17 @@ A multi-page Streamlit app combining two badminton data tools, deployed at [smal
 python -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
+```
 
-# Required for VOC page
-cp .env.example .env
-# Edit .env and set DEEPSEEK_API_KEY=<your-key>
-
-streamlit run Home.py
+RUN
+```
+streamlit run app.py
 ```
 
 ## Deployment (Streamlit Community Cloud)
 
 1. Push this repo to GitHub.
-2. Go to [share.streamlit.io](https://share.streamlit.io) → **New app** → select this repo, branch `main`, main file `Home.py`.
+2. Go to [share.streamlit.io](https://share.streamlit.io) → **New app** → select this repo, branch `main`, main file `app.py`.
 3. Under **Advanced settings → Secrets**, add:
    ```toml
    DEEPSEEK_API_KEY = "sk-..."

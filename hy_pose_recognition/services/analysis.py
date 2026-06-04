@@ -13,10 +13,18 @@ def build_strokes_from_motion(job_id: str, frames: list[dict[str, object]], fps:
     if len(frames) < 30:
         return []
 
+    # Wrist (id 16) speed per frame. Frames where the subject is not detected
+    # (e.g. the coach briefly leaving the frame) have no keypoint; treat those as
+    # zero motion so they are never picked as a contact and never crash the loop.
     speeds = []
     previous = _keypoint(frames[0], 16)
     for frame in frames[1:]:
         current = _keypoint(frame, 16)
+        if current is None or previous is None:
+            speeds.append(0.0)
+            if current is not None:
+                previous = current
+            continue
         speeds.append(math.hypot(current["x"] - previous["x"], current["y"] - previous["y"]))
         previous = current
 
@@ -53,10 +61,13 @@ def build_strokes_from_motion(job_id: str, frames: list[dict[str, object]], fps:
     ]
 
 
-def _keypoint(frame: dict[str, object], keypoint_id: int) -> dict[str, float]:
-    skeleton = frame["skeleton"]
-    keypoints = skeleton["keypoints"]
-    return next(item for item in keypoints if item["id"] == keypoint_id)
+def _keypoint(frame: dict[str, object], keypoint_id: int) -> dict[str, float] | None:
+    """Return the requested keypoint of the primary player, or None if absent."""
+    players = frame.get("players", [])
+    if not players:
+        return None
+    keypoints = players[0]["keypoints"]
+    return next((item for item in keypoints if item["id"] == keypoint_id), None)
 
 
 def landing_zone(x: float, y: float) -> str:
