@@ -31,13 +31,6 @@ html, body, [class*="css"], p, span, div, h1, h2, h3, h4 {
 #MainMenu, footer { visibility: hidden; }
 .stAppDeployButton { display: none; }
 header[data-testid="stHeader"] { background: transparent; }
-[data-testid="collapsedControl"],
-[data-testid="stSidebarCollapsedControl"],
-[data-testid="stSidebarCollapseButton"],
-button[aria-label="Collapse sidebar"],
-button[aria-label="Expand sidebar"],
-button[aria-label="收起侧边栏"],
-button[aria-label="展开侧边栏"] { display: none !important; }
 .stApp { background: var(--canvas); }
 .main .block-container {
   max-width: 960px;
@@ -84,21 +77,19 @@ button[aria-label="展开侧边栏"] { display: none !important; }
   margin-top: 1.5rem;
 }
 
-/* page_link overrides */
-[data-testid="stPageLink"] { margin-top: 1.5rem; display: inline-block; }
-[data-testid="stPageLink"] span[class*="material"] { display: none !important; }
-[data-testid="stPageLink"] a {
-  display: inline-flex !important;
-  align-items: center !important;
-  gap: 5px !important;
-  font-size: 13px !important;
-  font-weight: 600 !important;
-  color: var(--accent) !important;
-  text-decoration: none !important;
-  letter-spacing: 0.01em !important;
-  transition: gap 0.2s !important;
+a.page-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+  letter-spacing: 0.01em;
+  transition: gap 0.2s;
+  margin-top: 1.5rem;
 }
-[data-testid="stPageLink"] a:hover { gap: 10px !important; }
+a.page-link:hover { gap: 10px; }
 </style>
 """
 
@@ -122,13 +113,29 @@ pdf_path = Path(__file__).parent.parent / "data" / "Kexin_Wang_CV_CN.pdf"
 if pdf_path.exists():
     pdf_bytes = pdf_path.read_bytes()
     b64 = base64.b64encode(pdf_bytes).decode()
-    st.markdown(
-        f'<div class="pdf-wrap fu d2">'
-        f'<iframe src="data:application/pdf;base64,{b64}" '
-        f'width="100%" height="960" style="border:none; display:block;"></iframe>'
-        f"</div>",
-        unsafe_allow_html=True,
-    )
+    # Chrome blocks data: URI iframes for PDFs; use a blob URL created via JS instead.
+    blob_viewer = f"""
+    <!DOCTYPE html>
+    <html>
+    <head><style>
+      body {{ margin: 0; padding: 0; background: #fff; }}
+      iframe {{ width: 100%; height: 960px; border: none; display: block; }}
+    </style></head>
+    <body>
+    <iframe id="pdf-frame"></iframe>
+    <script>
+      const b64 = "{b64}";
+      const binary = atob(b64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {{ bytes[i] = binary.charCodeAt(i); }}
+      const blob = new Blob([bytes], {{ type: "application/pdf" }});
+      document.getElementById("pdf-frame").src = URL.createObjectURL(blob);
+    </script>
+    </body></html>
+    """
+    import streamlit.components.v1 as components
+    components.html(blob_viewer, height=960, scrolling=False)
+
     col, _ = st.columns([1, 3])
     with col:
         st.download_button(
@@ -140,4 +147,4 @@ if pdf_path.exists():
 else:
     st.error("简历 PDF 文件未找到。")
 
-st.page_link("pages/home.py", label="返回求职信  →")
+st.markdown('<a class="page-link fu" href="/" target="_self">返回求职信 →</a>', unsafe_allow_html=True)

@@ -30,14 +30,6 @@ html, body, [class*="css"], p, span, div, h1, h2, h3, h4 {
 #MainMenu, footer { visibility: hidden; }
 .stAppDeployButton { display: none; }
 header[data-testid="stHeader"] { background: transparent; }
-[data-testid="collapsedControl"],
-[data-testid="stSidebarCollapsedControl"],
-[data-testid="stSidebarCollapseButton"],
-section[data-testid="stSidebarCollapsedControl"],
-button[aria-label="Collapse sidebar"],
-button[aria-label="Expand sidebar"],
-button[aria-label="收起侧边栏"],
-button[aria-label="展开侧边栏"] { display: none !important; }
 .stApp { background: var(--canvas); }
 .main .block-container {
   max-width: 820px;
@@ -240,20 +232,19 @@ button[aria-label="展开侧边栏"] { display: none !important; }
 }
 
 /* ── PAGE LINK ── */
-[data-testid="stPageLink"] { margin-top: 0.6rem; display: inline-block; }
-[data-testid="stPageLink"] span[class*="material"] { display: none !important; }
-[data-testid="stPageLink"] a {
-  display: inline-flex !important;
-  align-items: center !important;
-  gap: 5px !important;
-  font-size: 13px !important;
-  font-weight: 600 !important;
-  color: var(--accent) !important;
-  text-decoration: none !important;
-  letter-spacing: 0.01em !important;
-  transition: gap 0.2s !important;
+a.page-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+  letter-spacing: 0.01em;
+  transition: gap 0.2s;
+  margin-top: 0.6rem;
 }
-[data-testid="stPageLink"] a:hover { gap: 10px !important; }
+a.page-link:hover { gap: 10px; }
 
 /* ── DEMO NOTE ── */
 .demo-note {
@@ -380,7 +371,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.markdown('<p class="demo-note fu d5">我已经为这个想法做了一个小 demo，欢迎体验</p>', unsafe_allow_html=True)
-st.page_link("pages/voc.py", label="VOC 用户评价监测  →")
+st.markdown('<a class="page-link fu d5" href="/voc" target="_self">VOC 用户评价监测 →</a>', unsafe_allow_html=True)
 
 st.markdown(
     """
@@ -411,7 +402,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.markdown('<p class="demo-note fu d5">我已经为这个想法做了一个小 demo，欢迎体验</p>', unsafe_allow_html=True)
-st.page_link("pages/pose_recognition.py", label="辅助教学分析 Demo  →")
+st.markdown('<a class="page-link fu d5" href="/pose_recognition" target="_self">辅助教学分析 Demo →</a>', unsafe_allow_html=True)
 
 # ── Compensation ──────────────────────────────────────────────────────────────
 st.markdown('<div class="section-label fu d5"><span>回报与风险对齐</span></div>', unsafe_allow_html=True)
@@ -494,7 +485,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.page_link("pages/cv.py", label="查看完整简历  →")
+st.markdown('<a class="page-link fu" href="/cv" target="_self">查看完整简历 →</a>', unsafe_allow_html=True)
 
 # ── Contact ───────────────────────────────────────────────────────────────────
 st.markdown(
