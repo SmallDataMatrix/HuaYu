@@ -20,7 +20,7 @@ from pathlib import Path
 
 _log = logging.getLogger(__name__)
 
-from config import DATA_DIR
+from app_config import DATA_DIR
 
 _SEARCHES_DIR = Path(DATA_DIR) / "searches"
 

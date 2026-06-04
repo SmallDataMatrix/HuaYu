@@ -11,7 +11,7 @@ import urllib.parse
 
 import requests
 
-from config import BILI_MIN_DELAY, BILI_MAX_DELAY, BILI_RETRIES, UA_POOL
+from app_config import BILI_MIN_DELAY, BILI_MAX_DELAY, BILI_RETRIES, UA_POOL
 
 logger = logging.getLogger(__name__)
 

@@ -20,14 +20,14 @@ def _get_client() -> OpenAI:
             raise EnvironmentError(
                 "DEEPSEEK_API_KEY not set. Add it to .env or your environment."
             )
-        from config import DEEPSEEK_BASE_URL
+        from app_config import DEEPSEEK_BASE_URL
         _client = OpenAI(api_key=api_key, base_url=DEEPSEEK_BASE_URL)
     return _client
 
 
 def chat(messages: list[dict], json_mode: bool = False) -> str:
     """Call DeepSeek chat; return response content string."""
-    from config import DEEPSEEK_MODEL
+    from app_config import DEEPSEEK_MODEL
     kwargs: dict = {}
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}

@@ -6,7 +6,7 @@ from typing import Callable
 
 from bs4 import BeautifulSoup
 
-from config import (
+from app_config import (
     BILI_MAX_VIDEOS, BILI_MAX_COMMENTS, MAX_CORPUS,
     BILI_SEARCH_CANDIDATES, RELEVANCE_MENTION_THRESHOLD,
     SCORE_W_PLAY, SCORE_W_RECENCY, RECENCY_HALFLIFE_DAYS,

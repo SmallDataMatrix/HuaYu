@@ -493,9 +493,6 @@ st.markdown(
     <div class="contact-bar fu">
       <a href="mailto:smalldatamatrix@gmail.com">smalldatamatrix@gmail.com</a>
       <div class="contact-dot"></div>
-      <a href="https://github.com/SmallDataMatrix" target="_blank" rel="noreferrer">
-        github.com/SmallDataMatrix
-      </a>
       <a href="https://fsquaredquant.nl/" target="_blank" rel="noreferrer">
         FFquant
       </a>

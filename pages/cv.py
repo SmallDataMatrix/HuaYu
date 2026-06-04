@@ -299,7 +299,7 @@ cv_html = f"""
       <div class="cv-contacts">
         <a href="tel:+8615601035571">📱 (+86) 156-0103-5571</a>
         <a href="mailto:gitkexin@gmail.com">✉️ gitkexin@gmail.com</a>
-        <a href="https://github.com/SmallDataMatrix" target="_blank" rel="noreferrer">⌨️ SmallDataMatrix</a>
+        <a href="https://fsquaredquant.nl/" target="_blank" rel="noreferrer">⌨️ FFquant</a>
       </div>
     </div>
   </div>
@@ -492,6 +492,10 @@ cv_html = f"""
 </div>
 """
 
+# Streamlit runs HTML through a Markdown parser: 4-space indentation becomes a
+# code block and blank lines split the block into <p> fragments. Strip leading
+# whitespace and drop blank lines so it renders as raw HTML.
+cv_html = "\n".join(line.strip() for line in cv_html.splitlines() if line.strip())
 st.markdown(cv_html, unsafe_allow_html=True)
 
 st.markdown('<a class="page-link fu" href="/" target="_self">← 返回求职信</a>', unsafe_allow_html=True)
