@@ -434,11 +434,11 @@ st.markdown(
       </div>
       <div class="stat-cell">
         <div class="stat-num">4 家</div>
-        <div class="stat-label">全球百强企业<br>企业内部经历</div>
+        <div class="stat-label">全球百强企业<br>数据科学家</div>
       </div>
       <div class="stat-cell">
         <div class="stat-num">3+ 全球奖牌</div>
-        <div class="stat-label">Kaggle<br>多场全球数据科学竞赛奖牌获得</div>
+        <div class="stat-label">Kaggle<br>全球数据科学竞赛多次获奖</div>
       </div>
     </div>
     """,

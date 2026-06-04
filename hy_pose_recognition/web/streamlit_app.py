@@ -327,13 +327,6 @@ def inject_style() -> None:
     st.markdown(
         """
         <style>
-          [data-testid="collapsedControl"],
-          [data-testid="stSidebarCollapsedControl"],
-          [data-testid="stSidebarCollapseButton"],
-          button[aria-label="Collapse sidebar"],
-          button[aria-label="Expand sidebar"],
-          button[aria-label="收起侧边栏"],
-          button[aria-label="展开侧边栏"] { display: none !important; }
           .stApp {
             background: #fbfaf6;
             color: #1f2933;

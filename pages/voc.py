@@ -20,17 +20,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# keep sidebar permanently visible
-st.markdown(
-    """
-    <style>
-    [data-testid="stSidebarCollapseButton"] { display: none !important; }
-    section[data-testid="stSidebar"] { min-width: 320px !important; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
 st.title("🏸 VOC 用户评价监测")
 st.caption("基于 B 站弹幕与评论 · 大语言模型分析 · 挖掘用户真实诉求 · 每条结论可溯源原文")
 
