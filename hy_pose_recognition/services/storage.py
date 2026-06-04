@@ -5,8 +5,10 @@ import shutil
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
-from fastapi import HTTPException, UploadFile
+if TYPE_CHECKING:
+    from fastapi import UploadFile
 
 from hy_pose_recognition.core import settings
 
@@ -30,11 +32,11 @@ def cleanup_expired_files() -> None:
             path.unlink(missing_ok=True)
 
 
-def validate_upload(file: UploadFile) -> str:
+def validate_upload(file: Any) -> str:
     extension = Path(file.filename or "").suffix.lower()
     if extension not in settings.allowed_extensions:
         formats = ", ".join(sorted(settings.allowed_extensions))
-        raise HTTPException(status_code=400, detail=f"Unsupported video format. Use {formats}.")
+        raise ValueError(f"Unsupported video format. Use {formats}.")
     return extension
 
 

@@ -42,7 +42,10 @@ async def upload_videos(background_tasks: BackgroundTasks, files: list[UploadFil
 
     created_jobs = []
     for file in files:
-        extension = validate_upload(file)
+        try:
+            extension = validate_upload(file)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         job_id = str(uuid4())
         stored_path = settings.upload_dir / f"{job_id}{extension}"
         with stored_path.open("wb") as output:

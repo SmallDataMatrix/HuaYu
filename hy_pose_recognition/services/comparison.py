@@ -3,8 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import HTTPException
-
 from hy_pose_recognition.core import settings
 from hy_pose_recognition.models.domain import AnalysisJob
 from hy_pose_recognition.services.landmarks import MEDIAPIPE_BONES, POSE_RENDER_IDS
@@ -24,7 +22,7 @@ COMPARISONS: dict[str, Path] = {}
 
 def frame_for(job: AnalysisJob, frame_index: int | None, fallback: str) -> dict[str, Any]:
     if not job.frames:
-        raise HTTPException(status_code=409, detail=f"任务 {job.job_id} 没有已完成的帧数据")
+        raise ValueError(f"任务 {job.job_id} 没有已完成的帧数据")
 
     if frame_index is None:
         stroke = job.strokes[0] if fallback == "first" else job.strokes[-1]
@@ -50,7 +48,7 @@ def render_skeleton_png(
     second_frame: dict[str, Any],
 ) -> Path:
     if Image is None or ImageDraw is None:
-        raise HTTPException(status_code=500, detail="生成对比图片需要安装Pillow")
+        raise RuntimeError("生成对比图片需要安装Pillow")
 
     ensure_data_dirs()
     width, height = 1440, 840
