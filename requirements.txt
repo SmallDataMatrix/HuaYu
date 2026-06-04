@@ -4,9 +4,9 @@ streamlit>=1.58.0
 # Pose Recognition – CV/ML
 numpy>=1.24,<2.0.0
 pillow>=12.0.0
-pandas>=2.3.3
+pandas>=2.0.0
 matplotlib>=3.10.7
-opencv-contrib-python==4.11.0.86
+opencv-python-headless==4.11.0.86
 mediapipe==0.10.21
 jax==0.4.38
 jaxlib==0.4.38
