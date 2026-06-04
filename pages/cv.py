@@ -299,7 +299,7 @@ cv_html = f"""
       <div class="cv-contacts">
         <a href="tel:+8615601035571">📱 (+86) 156-0103-5571</a>
         <a href="mailto:smalldatamatrix@gmail.com">✉️ smalldatamatrix@gmail.com</a>
-        <a href="https://fsquaredquant.nl/" target="_blank" rel="noreferrer">⌨️ FFquant</a>
+        <a href="https://fsquaredquant.nl/about-us//" target="_blank" rel="noreferrer">⌨️ FFquant</a>
       </div>
     </div>
   </div>
