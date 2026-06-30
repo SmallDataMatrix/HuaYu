@@ -12,14 +12,23 @@ ProgressCallback = Callable[[int, int], None]
 
 _MODEL_PATH = settings.project_root / "data" / "models" / "pose_landmarker_full.task"
 
-# Detection tuning for wide, multi-person gym footage where the training subject
-# sits at mid-distance. A direct full-frame pass tends to collapse or miss them,
-# so we locate the subject coarsely, then re-detect on an upscaled crop.
+# Detection tuning for wide, multi-person gym footage where the training subjects
+# sit at mid-distance. A direct full-frame pass frequently drops one of several
+# players on any given frame, so we (1) sample the clip to discover how many real
+# players are present, then (2) track each one independently on an upscaled crop of
+# its own region — which survives the global detector collapsing onto someone else.
 _DETECT_CONFIDENCE = 0.25      # detection / presence threshold (lenient for distant subjects)
-_COARSE_NUM_POSES = 5          # candidates considered when locating the subject
-_MIN_SUBJECT_HEIGHT = 0.12     # min normalised bbox height; rejects degenerate/cropped poses
-_ROI_PAD = 0.45                # padding around the subject bbox before cropping
-_CROP_UPSCALE_TARGET = 720     # px; upscale the subject crop for sharper landmarks
+_COARSE_NUM_POSES = 6          # poses requested from each full-frame pass
+_MIN_PLAYER_HEIGHT = 0.13      # min normalised bbox height to count as a foreground player
+_ROI_PAD = 0.45                # padding around a player bbox before cropping
+_CROP_UPSCALE_TARGET = 720     # px; upscale the player crop for sharper landmarks
+
+# Multi-player discovery + tracking.
+_MAX_PLAYERS = 4               # hard ceiling; the real count is decided by discovery
+_DISCOVERY_SAMPLES = 40        # frames sampled to learn how many players are present
+_DISCOVERY_SUPPORT_FRAC = 0.30  # a player must appear in >= this fraction of sampled frames
+_CLUSTER_RADIUS = 0.16         # normalised radius for grouping discovery detections
+_MATCH_DISTANCE = 0.20         # max centre distance to associate a detection with a track
 
 # BGR colours per player index (teal, orange, magenta, yellow-green)
 _LINE_COLORS = [
@@ -70,12 +79,12 @@ def render_pose_overlay_video(
             min_tracking_confidence=_DETECT_CONFIDENCE,
         )
 
-    # Carry the subject's location across frames so a dropped detection falls back
-    # to the previous region instead of losing the skeleton entirely.
-    subject_state: dict[str, Any] = {"center": None, "roi": None}
-
     with landmarker_cls.PoseLandmarker.create_from_options(_make_options(_COARSE_NUM_POSES)) as coarse_lm, \
          landmarker_cls.PoseLandmarker.create_from_options(_make_options(1)) as fine_lm:
+        # Decide how many distinct players are present and seed a track for each.
+        tracks = _discover_players(cv2, mp_module, coarse_lm, capture, max_frames, width, height)
+        capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
         for frame_index in range(max_frames):
             ok, frame = capture.read()
             if not ok:
@@ -84,7 +93,7 @@ def render_pose_overlay_video(
                 frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
 
             timestamp_ms = round(frame_index / fps * 1000)
-            players = _detect_subject(cv2, mp_module, coarse_lm, fine_lm, frame, subject_state)
+            players = _track_players(cv2, mp_module, coarse_lm, fine_lm, frame, tracks, width, height)
 
             if players:
                 total_detected += 1
@@ -157,38 +166,136 @@ def _open_video_writer(cv2: Any, output_path: Path, fps: int, width: int, height
     raise ValueError("无法创建骨架叠加输出视频。")
 
 
-def _detect_subject(
-    cv2: Any, mp_module: Any, coarse_lm: Any, fine_lm: Any, frame: Any, state: dict[str, Any]
+def _discover_players(
+    cv2: Any, mp_module: Any, coarse_lm: Any, capture: Any,
+    max_frames: int, width: int, height: int,
 ) -> list[dict[str, Any]]:
-    """Locate the main training subject and return it as a single-player list.
+    """Sample the clip to decide how many real players exist and seed a track per player.
 
-    Stage 1 runs a full-frame pass to find the dominant person; stage 2 crops a
-    padded box around them, upscales it, and re-detects for an accurate full-body
-    skeleton. The subject location is cached in ``state`` so frames where the
-    coarse pass fails still recover by cropping the previous region.
+    A full-frame pass often misses one of several mid-distance players on any given
+    frame, so we sample frames across the clip, group detections that land in the
+    same region, and keep only groups that recur often enough — real players — while
+    discarding fleeting bystanders (spectators, passers-by). Returns one track dict
+    per player, ordered left-to-right so player ids stay stable across the run.
     """
-    height, width = frame.shape[:2]
+    sample_count = min(_DISCOVERY_SAMPLES, max_frames)
+    step = max(1, (max_frames - 1) / max(1, sample_count - 1)) if sample_count > 1 else 1
+    indices = sorted({round(i * step) for i in range(sample_count)})
+
+    clusters: list[dict[str, Any]] = []
+    for frame_index in indices:
+        capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+        ok, frame = capture.read()
+        if not ok:
+            continue
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        result = coarse_lm.detect(mp_module.Image(image_format=mp_module.ImageFormat.SRGB, data=rgb))
+        for landmarks in result.pose_landmarks:
+            keypoints = _landmarks_to_keypoints(landmarks)
+            if _kp_height(keypoints) >= _MIN_PLAYER_HEIGHT:
+                _accumulate_cluster(clusters, _kp_center(keypoints), _kp_height(keypoints))
+
+    min_support = max(2, round(_DISCOVERY_SUPPORT_FRAC * max(1, len(indices))))
+    strong = [c for c in clusters if c["count"] >= min_support]
+    if not strong and clusters:  # never detect nothing: fall back to the most-seen region
+        strong = [max(clusters, key=lambda c: c["count"])]
+    strong.sort(key=lambda c: c["count"], reverse=True)
+
+    selected: list[dict[str, Any]] = []
+    for cluster in strong:
+        center = (cluster["sum_x"] / cluster["count"], cluster["sum_y"] / cluster["count"])
+        if any(math.hypot(center[0] - s["center"][0], center[1] - s["center"][1]) < _CLUSTER_RADIUS
+               for s in selected):
+            continue
+        median_height = sorted(cluster["heights"])[len(cluster["heights"]) // 2]
+        selected.append({"center": center, "height": median_height})
+        if len(selected) == _MAX_PLAYERS:
+            break
+
+    selected.sort(key=lambda s: s["center"][0])  # left -> right keeps player ids deterministic
+    return [_new_track(pid, s["center"], s["height"], width, height) for pid, s in enumerate(selected)]
+
+
+def _accumulate_cluster(
+    clusters: list[dict[str, Any]], center: tuple[float, float], player_height: float
+) -> None:
+    """Add a detection to the nearest existing region cluster, or start a new one."""
+    for cluster in clusters:
+        cx = cluster["sum_x"] / cluster["count"]
+        cy = cluster["sum_y"] / cluster["count"]
+        if math.hypot(center[0] - cx, center[1] - cy) < _CLUSTER_RADIUS:
+            cluster["sum_x"] += center[0]
+            cluster["sum_y"] += center[1]
+            cluster["heights"].append(player_height)
+            cluster["count"] += 1
+            return
+    clusters.append({"sum_x": center[0], "sum_y": center[1], "heights": [player_height], "count": 1})
+
+
+def _new_track(
+    player_id: int, center: tuple[float, float], player_height: float, width: int, frame_height: int
+) -> dict[str, Any]:
+    """Build a track seeded with a rough bbox; the first crop pass locks onto the body."""
+    half_w = max(0.04, 0.28 * player_height)  # players are taller than they are wide
+    half_h = max(0.06, 0.5 * player_height)
+    bbox = (center[0] - half_w, center[1] - half_h, center[0] + half_w, center[1] + half_h)
+    return {"id": player_id, "center": center, "roi": _roi_pixels(bbox, width, frame_height)}
+
+
+def _track_players(
+    cv2: Any, mp_module: Any, coarse_lm: Any, fine_lm: Any, frame: Any,
+    tracks: list[dict[str, Any]], width: int, height: int,
+) -> list[dict[str, Any]]:
+    """Track each known player for one frame, returning a player dict per visible track.
+
+    Each track is matched to the nearest fresh full-frame detection, then refined on
+    an upscaled crop of its region. When the full-frame pass misses a player, the crop
+    of its previous region still recovers the skeleton — so players are not dropped
+    just because the global detector collapsed onto someone else.
+    """
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    coarse = coarse_lm.detect(mp_module.Image(image_format=mp_module.ImageFormat.SRGB, data=rgb))
-    candidates = [_landmarks_to_keypoints(lm) for lm in coarse.pose_landmarks]
+    result = coarse_lm.detect(mp_module.Image(image_format=mp_module.ImageFormat.SRGB, data=rgb))
+    candidates = [kp for kp in (_landmarks_to_keypoints(lm) for lm in result.pose_landmarks)
+                  if _kp_height(kp) >= _MIN_PLAYER_HEIGHT]
 
-    subject = _pick_subject(candidates, state["center"])
-    if subject is not None:
-        state["center"] = _kp_center(subject)
-        state["roi"] = _roi_pixels(_kp_bbox(subject), width, height)
+    used: set[int] = set()
+    players: list[dict[str, Any]] = []
+    for track in tracks:
+        match_idx = _nearest_candidate(candidates, used, track["center"])
+        seed_roi = (_roi_pixels(_kp_bbox(candidates[match_idx]), width, height)
+                    if match_idx is not None else track["roi"])
+        refined = _detect_on_crop(cv2, mp_module, fine_lm, frame, seed_roi, width, height)
 
-    if state["roi"] is None:
-        return []
+        if refined is not None and _kp_height(refined) >= _MIN_PLAYER_HEIGHT:
+            chosen = refined
+        elif match_idx is not None:
+            chosen = candidates[match_idx]
+        else:
+            continue  # player not visible this frame; keep last region for re-acquisition
 
-    refined = _detect_on_crop(cv2, mp_module, fine_lm, frame, state["roi"], width, height)
-    if refined is not None and _kp_height(refined) >= _MIN_SUBJECT_HEIGHT:
-        state["center"] = _kp_center(refined)
-        state["roi"] = _roi_pixels(_kp_bbox(refined), width, height)
-        return [_make_player(refined)]
+        if match_idx is not None:
+            used.add(match_idx)
+        track["center"] = _kp_center(chosen)
+        track["roi"] = _roi_pixels(_kp_bbox(chosen), width, height)
+        players.append(_make_player(chosen, track["id"]))
 
-    if subject is not None:
-        return [_make_player(subject)]
-    return []
+    players.sort(key=lambda player: player["player_id"])
+    return players
+
+
+def _nearest_candidate(
+    candidates: list[list[dict[str, float]]], used: set[int], center: tuple[float, float]
+) -> int | None:
+    """Index of the closest unused candidate within the match radius, else None."""
+    best_idx, best_dist = None, _MATCH_DISTANCE
+    for idx, keypoints in enumerate(candidates):
+        if idx in used:
+            continue
+        cx, cy = _kp_center(keypoints)
+        dist = math.hypot(cx - center[0], cy - center[1])
+        if dist < best_dist:
+            best_idx, best_dist = idx, dist
+    return best_idx
 
 
 def _detect_on_crop(
@@ -222,23 +329,6 @@ def _detect_on_crop(
     ]
 
 
-def _pick_subject(
-    candidates: list[list[dict[str, float]]], prev_center: tuple[float, float] | None
-) -> list[dict[str, float]] | None:
-    """Choose the main subject: track the previous one, else the largest standing person."""
-    valid = [kp for kp in candidates if _kp_height(kp) >= _MIN_SUBJECT_HEIGHT]
-    if not valid:
-        return None
-    if prev_center is not None:
-        # Stay locked on the same person: nearest centre wins, taller breaks ties.
-        return min(
-            valid,
-            key=lambda kp: math.hypot(*(a - b for a, b in zip(_kp_center(kp), prev_center)))
-            - 0.25 * _kp_height(kp),
-        )
-    return max(valid, key=_kp_height)
-
-
 def _landmarks_to_keypoints(landmarks: Any) -> list[dict[str, float]]:
     return [
         {"id": idx, "x": _clip(lm.x), "y": _clip(lm.y), "visibility": round(float(lm.visibility), 4)}
@@ -246,8 +336,8 @@ def _landmarks_to_keypoints(landmarks: Any) -> list[dict[str, float]]:
     ]
 
 
-def _make_player(keypoints: list[dict[str, float]]) -> dict[str, Any]:
-    return {"player_id": 0, "keypoints": keypoints, "angles": _compute_angles(keypoints)}
+def _make_player(keypoints: list[dict[str, float]], player_id: int = 0) -> dict[str, Any]:
+    return {"player_id": player_id, "keypoints": keypoints, "angles": _compute_angles(keypoints)}
 
 
 def _kp_bbox(keypoints: list[dict[str, float]]) -> tuple[float, float, float, float]:

@@ -20,6 +20,7 @@ VIDEO_MIME_TYPES = {
 def build_motion_player_html(job: AnalysisJob, title: str) -> str:
     """Build a self-contained video player with real-time pose overlay."""
     frames = [_frame_payload(frame) for frame in job.frames]
+    player_ids = sorted({p["player_id"] for frame in job.frames for p in frame.get("players", [])})
     video_path = job.annotated_video_path or job.video_path
     video_source = _video_data_uri(video_path)
     has_annotated_video = job.annotated_video_path is not None
@@ -31,6 +32,7 @@ def build_motion_player_html(job: AnalysisJob, title: str) -> str:
         "strokes": job.strokes,
         "landings": job.landings,
         "frames": frames,
+        "playerIds": player_ids,
         "bones": MEDIAPIPE_BONES,
         "poseIds": sorted(POSE_RENDER_IDS),
         "drawOverlay": not has_annotated_video,
@@ -60,14 +62,11 @@ def build_motion_player_html(job: AnalysisJob, title: str) -> str:
       <div class="phase" data-phase>等待播放</div>
       <div class="metric-grid">
         <div><span>当前帧</span><strong data-frame>0</strong></div>
+        <div><span>识别人数</span><strong>{len(player_ids)}</strong></div>
         <div><span>击球次数</span><strong>{len(job.strokes)}</strong></div>
         <div><span>落点数量</span><strong>{len(job.landings)}</strong></div>
-        <div><span>右肘角度</span><strong data-elbow>--</strong></div>
-        <div><span>右膝角度</span><strong data-knee>--</strong></div>
-        <div><span>躯干旋转</span><strong data-trunk>--</strong></div>
-        <div><span>右肩角度</span><strong data-shoulder>--</strong></div>
-        <div><span>羽球检测</span><strong data-shuttle>--</strong></div>
       </div>
+      <div class="player-metrics" data-player-metrics></div>
     </div>
     <script type="application/json" data-payload>{payload_json}</script>
     <script>
@@ -82,14 +81,44 @@ def build_motion_player_html(job: AnalysisJob, title: str) -> str:
         const timeLabel = root.querySelector("[data-time]");
         const phaseLabel = root.querySelector("[data-phase]");
         const frameLabel = root.querySelector("[data-frame]");
-        const elbowLabel = root.querySelector("[data-elbow]");
-        const kneeLabel = root.querySelector("[data-knee]");
-        const trunkLabel = root.querySelector("[data-trunk]");
-        const shoulderLabel = root.querySelector("[data-shoulder]");
-        const shuttleLabel = root.querySelector("[data-shuttle]");
+        const playerMetrics = root.querySelector("[data-player-metrics]");
         const frames = payload.frames || [];
+        const playerIds = payload.playerIds || [];
         const durationMs = Math.max(1, payload.durationSec * 1000);
         let seeking = false;
+
+        const PLAYER_CARD_COLORS = ["#14b8a6", "#f97316", "#a855f7", "#eab308"];
+        const ANGLE_FIELDS = [
+          ["right_elbow", "右肘"],
+          ["right_knee", "右膝"],
+          ["trunk_rotation", "躯干"],
+          ["right_shoulder", "右肩"],
+        ];
+        // One metric card per detected player, colour-matched to its skeleton.
+        const cardRefs = playerIds.map((pid, order) => {{
+          const card = document.createElement("div");
+          card.className = "pm-card";
+          card.style.borderLeftColor = PLAYER_CARD_COLORS[order % PLAYER_CARD_COLORS.length];
+          const title = document.createElement("div");
+          title.className = "pm-title";
+          title.textContent = `运动员 ${{order + 1}}`;
+          card.appendChild(title);
+          const valueEls = {{}};
+          for (const [key, label] of ANGLE_FIELDS) {{
+            const row = document.createElement("div");
+            row.className = "pm-row";
+            const name = document.createElement("span");
+            name.textContent = label;
+            const value = document.createElement("b");
+            value.textContent = "--";
+            row.appendChild(name);
+            row.appendChild(value);
+            card.appendChild(row);
+            valueEls[key] = value;
+          }}
+          playerMetrics.appendChild(card);
+          return {{ playerId: pid, valueEls }};
+        }});
 
         function resizeCanvas() {{
           const rect = video.getBoundingClientRect();
@@ -198,13 +227,14 @@ def build_motion_player_html(job: AnalysisJob, title: str) -> str:
         }}
 
         function updateMetrics(frame) {{
-          const angles = frame.angles || {{}};
           frameLabel.textContent = frame.frameIndex;
-          elbowLabel.textContent = `${{Math.round(angles.right_elbow || 0)}}度`;
-          kneeLabel.textContent = `${{Math.round(angles.right_knee || 0)}}度`;
-          trunkLabel.textContent = `${{Math.round(angles.trunk_rotation || 0)}}度`;
-          shoulderLabel.textContent = `${{Math.round(angles.right_shoulder || 0)}}度`;
-          shuttleLabel.textContent = frame.shuttle && frame.shuttle.detected ? "已检测" : "未检测";
+          const byId = new Map((frame.players || []).map((p) => [p.playerId, p.angles || {{}}]));
+          for (const ref of cardRefs) {{
+            const angles = byId.get(ref.playerId);
+            for (const [key] of ANGLE_FIELDS) {{
+              ref.valueEls[key].textContent = angles ? `${{Math.round(angles[key] || 0)}}度` : "--";
+            }}
+          }}
           phaseLabel.textContent = phaseForFrame(frame.frameIndex);
         }}
 
@@ -357,6 +387,38 @@ def build_motion_player_html(job: AnalysisJob, title: str) -> str:
         display: block;
         font-size: 18px;
         line-height: 1.2;
+      }}
+      .player-metrics {{
+        display: grid;
+        gap: 8px;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        margin-top: 8px;
+      }}
+      .pm-card {{
+        background: #fbfaf6;
+        border: 1px solid #e6e0d2;
+        border-left: 4px solid #14b8a6;
+        border-radius: 8px;
+        padding: 9px 10px;
+      }}
+      .pm-title {{
+        color: #1f2933;
+        font-size: 13px;
+        font-weight: 700;
+        margin-bottom: 6px;
+      }}
+      .pm-row {{
+        display: flex;
+        justify-content: space-between;
+        font-size: 13px;
+        padding: 1px 0;
+      }}
+      .pm-row span {{
+        color: #66727f;
+      }}
+      .pm-row b {{
+        color: #1f2933;
+        font-weight: 600;
       }}
       @media (max-width: 720px) {{
         .controls {{

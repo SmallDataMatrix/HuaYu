@@ -3,9 +3,12 @@ import streamlit as st
 
 # Streamlit Cloud stores secrets in st.secrets; surface them as env vars
 # so llm/deepseek.py can pick up DEEPSEEK_API_KEY via os.getenv().
-for _k, _v in st.secrets.items():
-    if isinstance(_v, str):
-        os.environ.setdefault(_k, _v)
+try:
+    for _k, _v in st.secrets.items():
+        if isinstance(_v, str):
+            os.environ.setdefault(_k, _v)
+except Exception:
+    pass
 
 pg = st.navigation(
     [

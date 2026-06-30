@@ -88,10 +88,15 @@ def render_pose_into_panel(
     joint_color: str,
     accent: str,
 ) -> None:
-    keypoints = frame["skeleton"]["keypoints"]
-    kp = {item["id"]: item for item in keypoints}
-    xs = [kp[index]["x"] for index in POSE_RENDER_IDS]
-    ys = [kp[index]["y"] for index in POSE_RENDER_IDS]
+    players = frame.get("players") or []
+    if not players:
+        draw.text((rect[0] + 22, rect[1] + 60), "该帧未检测到人体", fill="#8a6d3b")
+        return
+    skeleton = players[0]  # compare the primary (left-most) player
+    kp = {item["id"]: item for item in skeleton["keypoints"]}
+    render_ids = [index for index in POSE_RENDER_IDS if index in kp]
+    xs = [kp[index]["x"] for index in render_ids]
+    ys = [kp[index]["y"] for index in render_ids]
     min_x, max_x = min(xs), max(xs)
     min_y, max_y = min(ys), max(ys)
     source_w = max(0.001, max_x - min_x)
@@ -112,15 +117,16 @@ def render_pose_into_panel(
         )
 
     for start, end in MEDIAPIPE_BONES:
-        draw.line((*xy(start), *xy(end)), fill=bone_color, width=8)
+        if start in kp and end in kp:
+            draw.line((*xy(start), *xy(end)), fill=bone_color, width=8)
 
-    for index in POSE_RENDER_IDS:
+    for index in render_ids:
         x, y = xy(index)
         radius = 8 if index in {14, 16, 26, 28} else 6
         fill = accent if index in {14, 16} else joint_color
         draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=fill)
 
-    angles = frame["skeleton"]["angles"]
+    angles = skeleton["angles"]
     metrics = [
         f"右肘角度 {angles['right_elbow']:.1f}度",
         f"右膝角度 {angles['right_knee']:.1f}度",
